@@ -1,11 +1,16 @@
+# -*- coding: utf-8 -*-
 """
-Отчёт по входам пользователя для регистраторов Hikvision (ISAPI).
-Всё в терминале, без открытия веб-интерфейса. Итог — красивый Excel-файл.
+HIK-Report — отчёт по входам пользователей для регистраторов Hikvision (ISAPI).
+Всё в терминале, без открытия веб-интерфейса; итог — оформленный Excel-файл.
+
+Регистраторы задаются пользователем в меню настроек («0») и сохраняются
+внутри самого exe (NTFS ADS). В коде никаких адресов по умолчанию нет.
 """
 
 import sys
 import os
 import time
+import json
 import math
 import colorsys
 import socket
@@ -66,7 +71,7 @@ def _enable_vt():
 
 TRUECOLOR = _enable_vt()
 if TRUECOLOR:
-    colorama_init(strip=False, convert=False)
+    colorama_init(strip=False, convert=False)  # пропускаем ANSI как есть (24-бит)
 else:
     colorama_init()
 requests.packages.urllib3.disable_warnings()  # на случай https с самоподписанным
@@ -101,26 +106,61 @@ def output_dir():
 # ------------------------------------------------------------------ #
 #  Конфигурация регистраторов
 # ------------------------------------------------------------------ #
-RECORDERS = {
-    "1": {
-        "name": "",
-        "lan": ("",),
-        "remote": ("",),
-    },
-    "2": {
-        "name": "",
-        "lan": ("",),
-        "remote": ("",),
-    },
-}
-
 HTTP_TIMEOUT = 8
+
+# По умолчанию список пуст: пользователь добавляет свои регистраторы
+# через меню настроек («0»). Настройки сохраняются внутри самого exe (ADS).
+DEFAULT_RECORDERS = []
+
+
+def _cfg_stream():
+    """Путь к хранилищу настроек — альтернативный поток NTFS внутри самого exe.
+    Отдельного видимого файла нет; настройки «прилипают» к exe."""
+    base = sys.executable if getattr(sys, "frozen", False) \
+        else os.path.abspath(__file__)
+    return base + ":hikcfg"
+
+
+def load_recorders():
+    """Читает регистраторы из ADS exe; если пусто/ошибка — значения по умолчанию."""
+    try:
+        with open(_cfg_stream(), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        out = []
+        for r in (data.get("recorders") or []):
+            name = str(r.get("name", "")).strip() or str(r.get("lan_ip", ""))
+            out.append({
+                "name": name,
+                "lan_ip": str(r.get("lan_ip", "")).strip(),
+                "lan_port": int(r.get("lan_port", 80) or 80),
+                "rem_host": str(r.get("rem_host", "")).strip(),
+                "rem_port": int(r.get("rem_port", 0) or 0),
+            })
+        if out:
+            return out
+    except Exception:
+        pass
+    return [dict(r) for r in DEFAULT_RECORDERS]
+
+
+def save_recorders(recs):
+    """Сохраняет регистраторы в ADS exe. Возвращает (ok, сообщение об ошибке)."""
+    try:
+        with open(_cfg_stream(), "w", encoding="utf-8") as f:
+            json.dump({"recorders": recs}, f, ensure_ascii=False, indent=2)
+        return True, ""
+    except Exception as e:
+        return False, str(e)
 
 
 # ------------------------------------------------------------------ #
 #  Вспомогательные функции вывода
 # ------------------------------------------------------------------ #
 def cls():
+    try:
+        CON.clear_badges()
+    except Exception:
+        pass
     os.system("cls" if os.name == "nt" else "clear")
 
 
@@ -163,7 +203,7 @@ class _Console:
 
     • снизу рисуется радужный прогресс-бар;
     • выше — бейджи SUCCESS/ERROR, которые ПРОДОЛЖАЮТ мигать на следующих
-      шагах, пока их строка видна на экране.
+      шагах, пока их строка видна на экране (ушла в прокрутку — застывает).
     Процесс не задерживается: всё рисует фоновый поток. Позиция курсора
     сохраняется/восстанавливается (ESC 7 / ESC 8), поэтому даже ввод с
     клавиатуры не портится."""
@@ -330,6 +370,12 @@ class _Console:
             off = f"\x1b[1;97m{text}\x1b[0m"
             self._push_badge(on, off, text)
 
+    def clear_badges(self):
+        """Сброс отслеживаемых бейджей/бара (перед очисткой экрана)."""
+        with self.lock:
+            self.badges = []
+            self.bar = None
+
 
 class ProgressBar:
     """Тонкая обёртка: сам бар рисует фоновый поток _Console (без задержек)."""
@@ -364,7 +410,7 @@ sys.stdout = CON
 
 
 def getch_choice(valid):
-    """Ждём одиночное нажатие одной из клавиш valid (без Enter). Иное - игнор."""
+    """Ждём одиночное нажатие одной из клавиш valid (без Enter). Иное — игнор."""
     try:
         import msvcrt
     except ImportError:
@@ -375,7 +421,7 @@ def getch_choice(valid):
                 return s
     while True:
         ch = msvcrt.getch()
-        if ch in (b"\x00", b"\xe0"):   # спец-клавиши - съедаем второй байт
+        if ch in (b"\x00", b"\xe0"):   # спец-клавиши — съедаем второй байт
             msvcrt.getch()
             continue
         try:
@@ -430,7 +476,7 @@ def read_line_visible(prompt):
 
 
 def read_password(prompt="Пароль: "):
-    """Скрытый ввод (эхо «*») через общий поток вывода. Подтверждение - Enter."""
+    """Скрытый ввод (эхо «*») через общий поток вывода. Подтверждение — Enter."""
     try:
         import msvcrt
     except ImportError:
@@ -468,8 +514,8 @@ def read_password(prompt="Пароль: "):
 
 
 def wait_exit_or_again(ok=True):
-    """Финальный выбор: ESC - выход, Enter - назад к выбору пользователя.
-    Выше мигает SUCCESS (пока строка видна) - не задерживая ожидание."""
+    """Финальный выбор: ESC — выход, Enter — назад к выбору пользователя.
+    Выше мигает SUCCESS (пока строка видна) — не задерживая ожидание."""
     CON.add_badge("✓  SUCCESS — отчёт сформирован" if ok else "✗  ERROR",
                   ok=ok)
     print(Fore.YELLOW
@@ -527,27 +573,26 @@ def tcp_ok(host, port, timeout=2.0):
 
 def resolve_endpoint(rec):
     """Возвращает (base_url, via, host, port) или None. Приоритет — локальная сеть."""
-    h, p = rec["lan"]
-    if tcp_ok(h, p):
+    h, p = rec.get("lan_ip", ""), rec.get("lan_port", 80)
+    if h and tcp_ok(h, p):
         return (f"http://{h}:{p}", "локальная сеть", h, p)
-    h, p = rec["remote"]
-    if tcp_ok(h, p):
+    h, p = rec.get("rem_host", ""), rec.get("rem_port", 0)
+    if h and p and tcp_ok(h, p):
         return (f"http://{h}:{p}", "удалённый порт", h, p)
     return None
 
 
-def check_all():
+def check_all(recs):
     print(Fore.YELLOW + "\nПроверка доступности регистраторов...\n" + Style.RESET_ALL)
-    result = {}
-    keys = list(RECORDERS.keys())
+    result = [None] * len(recs)
+    n = max(len(recs), 1)
     bar = ProgressBar("Проверяю регистраторы").start()
     try:
-        for i, k in enumerate(keys):
-            bar.set(i / len(keys), f"Проверяю {RECORDERS[k]['name']}")
-            result[k] = resolve_endpoint(RECORDERS[k])
+        for i, rec in enumerate(recs):
+            bar.set(i / n, f"Проверяю {rec['name']}")
+            result[i] = resolve_endpoint(rec)
     finally:
-        bar.finish(ok=any(v is not None for v in result.values()),
-                   prefix="Доступность")
+        bar.finish(ok=any(v is not None for v in result), prefix="Доступность")
     return result
 
 
@@ -649,7 +694,7 @@ def get_channel_names(session, base):
 
 
 def cam_label(local_id, names):
-    """'D30' + карта -> 'D30 - Проходная' (или 'D30', если имени нет)."""
+    """'D30' + карта -> 'D30 — Проходная' (или 'D30', если имени нет)."""
     if not local_id:
         return ""
     digits = "".join(c for c in local_id if c.isdigit())
@@ -1058,6 +1103,105 @@ def ask_date(prompt, default=None):
 
 
 # ------------------------------------------------------------------ #
+#  Настройки регистраторов (меню по «0»)
+# ------------------------------------------------------------------ #
+def press_any():
+    try:
+        import msvcrt
+        print(Fore.YELLOW + "  — нажмите любую клавишу —" + Style.RESET_ALL)
+        ch = msvcrt.getch()
+        if ch in (b"\x00", b"\xe0"):
+            msvcrt.getch()
+    except Exception:
+        try:
+            input()
+        except Exception:
+            pass
+
+
+def _edit_recorder_dialog(rec):
+    """Диалог создания/редактирования. Пустой ввод = оставить текущее."""
+    cur = rec or {"name": "", "lan_ip": "", "lan_port": 80,
+                  "rem_host": "", "rem_port": 0}
+
+    def ask(label, val):
+        hint = f" [{val}]" if val not in (None, "", 0) else ""
+        return read_line_visible(f"  {label}{hint}: ").strip()
+
+    print()
+    print(Fore.CYAN + ("  Новый регистратор" if rec is None
+                       else f"  Редактирование: {cur['name']}") + Style.RESET_ALL)
+    name = ask("Название", cur["name"]) or cur["name"]
+    lan_ip = ask("Внутренний IP (локальная сеть)", cur["lan_ip"]) or cur["lan_ip"]
+    lp = ask("Внутренний порт (обычно 80)", cur["lan_port"])
+    lan_port = int(lp) if lp.isdigit() else cur["lan_port"]
+    rem_host = ask("Внешний IP/хост (для удалёнки)", cur["rem_host"])
+    rem_host = rem_host if rem_host else cur["rem_host"]
+    rp = ask("Внешний порт", cur["rem_port"])
+    rem_port = int(rp) if rp.isdigit() else cur["rem_port"]
+
+    if not lan_ip and not rem_host:
+        print(Fore.RED + "  Нужен хотя бы внутренний IP или внешний хост."
+              + Style.RESET_ALL)
+        press_any()
+        return None
+    if not name:
+        name = lan_ip or rem_host or "регистратор"
+    return {"name": name, "lan_ip": lan_ip, "lan_port": lan_port,
+            "rem_host": rem_host, "rem_port": rem_port}
+
+
+def settings_menu(recs):
+    """Меню настроек: изменить / добавить / удалить регистраторы, сохранить в exe."""
+    while True:
+        cls()
+        banner("Настройки регистраторов")
+        if not recs:
+            print(Fore.YELLOW + "  Список пуст — добавьте регистратор (A)."
+                  + Style.RESET_ALL)
+        for i, r in enumerate(recs, 1):
+            rem = (f"{r['rem_host']}:{r['rem_port']}"
+                   if r["rem_host"] and r["rem_port"] else "—")
+            print(f"  {Style.BRIGHT}{i}{Style.NORMAL}. {r['name']}")
+            print(f"       внутренний: {r['lan_ip']}:{r['lan_port']}")
+            print(f"       внешний:    {rem}")
+        print()
+        print("  [цифра] изменить   [A] добавить   [D] удалить")
+        print("  [S] сохранить и назад   [Q] назад без сохранения")
+        ans = read_line_visible(Fore.YELLOW + "  Выбор: "
+                                + Style.RESET_ALL).strip().lower()
+
+        if ans in ("q", ""):
+            return
+        if ans == "s":
+            ok, err = save_recorders(recs)
+            if ok:
+                CON.add_badge("✓  SUCCESS — настройки сохранены в exe", ok=True)
+            else:
+                CON.add_badge(f"✗  ERROR — не сохранено: {err}", ok=False)
+            press_any()
+            return
+        if ans == "a":
+            r = _edit_recorder_dialog(None)
+            if r:
+                recs.append(r)
+            continue
+        if ans == "d":
+            num = read_line_visible("  Номер для удаления: ").strip()
+            if num.isdigit() and 1 <= int(num) <= len(recs):
+                removed = recs.pop(int(num) - 1)
+                print(Fore.GREEN + f"  Удалён: {removed['name']}"
+                      + Style.RESET_ALL)
+                press_any()
+            continue
+        if ans.isdigit() and 1 <= int(ans) <= len(recs):
+            r = _edit_recorder_dialog(recs[int(ans) - 1])
+            if r:
+                recs[int(ans) - 1] = r
+            continue
+
+
+# ------------------------------------------------------------------ #
 #  Главный сценарий
 # ------------------------------------------------------------------ #
 def main():
@@ -1069,31 +1213,45 @@ def main():
         pass
     banner("HIK-Report — отчёт по входам (Hikvision NVR)")
 
-    # Шаг 1 — доступность
-    avail = check_all()
+    # Шаг 1-2 — выбор регистратора (0 — настройки)
+    recs = load_recorders()
+    while True:
+        avail = check_all(recs) if recs else []
+        print()
+        banner("Выберите регистратор")
+        if not recs:
+            print(Fore.YELLOW + "  Список пуст. Нажмите 0, чтобы добавить "
+                  "регистратор." + Style.RESET_ALL)
+        for i, rec in enumerate(recs, 1):
+            ep = avail[i - 1]
+            if ep:
+                tag = Fore.GREEN + f"[доступен — {ep[1]}]" + Style.RESET_ALL
+            else:
+                tag = Fore.RED + Style.BRIGHT + "[НЕДОСТУПЕН]" + Style.RESET_ALL
+            print(f"  {Style.BRIGHT}{i}{Style.NORMAL}. {rec['name']}   {tag}")
+        print(f"  {Style.BRIGHT}0{Style.NORMAL}. Настройки "
+              "(изменить / добавить регистраторы)")
+        print(Fore.YELLOW + "\n  Выберите цифру регистратора или 0 — настройки"
+              + Style.RESET_ALL)
 
-    # Шаг 2 — меню выбора
-    print()
-    banner("Выберите регистратор")
-    for k in sorted(RECORDERS):
-        rec = RECORDERS[k]
-        ep = avail[k]
-        if ep:
-            tag = Fore.GREEN + f"[доступен — {ep[1]}]" + Style.RESET_ALL
-        else:
-            tag = Fore.RED + Style.BRIGHT + "[НЕДОСТУПЕН]" + Style.RESET_ALL
-        print(f"  {Style.BRIGHT}{k}{Style.NORMAL}. {rec['name']}   {tag}")
-    print(Fore.YELLOW + "\n  Нажмите 1 или 2 (без Enter)…" + Style.RESET_ALL)
-
-    choice = getch_choice({"1", "2"})
-    rec = RECORDERS[choice]
-    ep = avail[choice]
-    if not ep:
-        print(Fore.RED + f"\nРегистратор {rec['name']} недоступен ни локально, "
-              f"ни по удалённому порту. Выход." + Style.RESET_ALL)
-        pause_exit()
-        return
-    base_url, via = ep[0], ep[1]
+        valid = {"0"} | {str(i) for i in range(1, min(len(recs), 9) + 1)}
+        choice = getch_choice(valid)
+        if choice == "0":
+            settings_menu(recs)
+            recs = load_recorders()
+            continue
+        idx = int(choice) - 1
+        rec = recs[idx]
+        ep = avail[idx]
+        if not ep:
+            print(Fore.RED + f"\n  Регистратор {rec['name']} недоступен ни "
+                  f"локально, ни по удалённому порту." + Style.RESET_ALL)
+            CON.add_badge("✗  ERROR — регистратор недоступен, выберите другой",
+                          ok=False)
+            press_any()
+            continue
+        base_url, via = ep[0], ep[1]
+        break
 
     # Шаг 4 — подключение c прогрессбаром
     print()
@@ -1157,7 +1315,7 @@ def main():
             print(f"  {Style.BRIGHT}{i:>2}{Style.NORMAL}. {u['name']}{lvl}")
 
         if len(users) <= 9:
-            print(Fore.YELLOW + "\n  Нажмите цифру пользователя (без Enter)…"
+            print(Fore.YELLOW + "\n  Нажмите цифру пользователя"
                   + Style.RESET_ALL)
             valid = {str(i) for i in range(1, len(users) + 1)}
             sel = int(getch_choice(valid))
@@ -1251,6 +1409,11 @@ def selftest():
 if __name__ == "__main__":
     if "--selftest" in sys.argv:
         selftest()
+        sys.exit(0)
+    if "--adstest" in sys.argv:
+        ok, err = save_recorders(load_recorders())
+        rd = load_recorders()
+        print("ADSTEST write:", ok, err, "| read_back:", len(rd))
         sys.exit(0)
     try:
         main()
