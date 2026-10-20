@@ -16,6 +16,7 @@
   <img src="https://img.shields.io/badge/python-3.x-3776AB?style=flat-square&logo=python&logoColor=white">
   <img src="https://img.shields.io/badge/single-.exe%20(no%20install)-2ea44f?style=flat-square">
   <img src="https://img.shields.io/badge/API-Hikvision%20ISAPI-E60012?style=flat-square">
+  <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square">
 </p>
 
 <p align="center">
@@ -103,7 +104,8 @@ The result is `dist/HIK-Report.exe`. You can also run the script directly with P
 
 ### 📜 License
 
-Choose a license for your repository (e.g. **MIT**) and add a `LICENSE` file.
+Released under the **MIT License** — see [`LICENSE`](LICENSE).
+Free to use, modify and distribute; just keep the copyright notice.
 
 <p align="right"><a href="#top">↑ back to top</a></p>
 
@@ -188,6 +190,7 @@ pyinstaller --onefile --console --name "HIK-Report" --icon hik.ico nvr_report.py
 
 ### 📜 Лицензия
 
-Выберите лицензию для репозитория (например, **MIT**) и добавьте файл `LICENSE`.
+Распространяется под лицензией **MIT** — см. [`LICENSE`](LICENSE).
+Можно свободно использовать, изменять и распространять; нужно лишь сохранить строку об авторстве.
 
 <p align="right"><a href="#top">↑ наверх</a></p>
